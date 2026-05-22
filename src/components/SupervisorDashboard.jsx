@@ -7,9 +7,13 @@ import {
   createTask, updateTask, deleteTask as deleteTaskApi,
   fetchSupervisors, createSupervisor, updateSupervisor, deleteSupervisor,
   fetchModules, createModule, deleteModule,
+  fetchNotifications, createNotification, createNotifications,
+  markNotificationRead, markAllNotificationsRead,
+  fetchTaskNotificationSettings, upsertTaskNotificationSetting, sendEmailNotification,
 } from '../lib/api'
+import { supabase } from '../lib/supabase'
 import { getDayNumber, getDaysLeft, formatDate, CHECKINS, COMPETENCY_OPTIONS, ADMIN_ROLES } from '../data/constants'
-import { Avatar, Badge, ProgressBar, Card, Btn, AdminBadge, Spinner, RALogoSmall, ErrorMsg, SuccessMsg } from './UI'
+import { Avatar, Badge, ProgressBar, Card, Btn, AdminBadge, Spinner, RALogoSmall, ErrorMsg, SuccessMsg, NotificationBell } from './UI'
 
 export default function SupervisorDashboard() {
   const { session, signOut } = useAuth()
@@ -22,23 +26,84 @@ export default function SupervisorDashboard() {
   const [pending, setPending] = useState([])
   const [supervisors, setSupervisors] = useState([])
   const [loading, setLoading] = useState(true)
+  const [notifications, setNotifications] = useState([])
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [emps, tsks, pend, sups] = await Promise.all([
+      const [emps, tsks, pend, sups, notifs] = await Promise.all([
         fetchEmployees(), fetchTasks(), fetchPendingApprovals(), fetchSupervisors(),
+        fetchNotifications('supervisor', sup.id),
       ])
       setEmployees(emps)
       setTasks(tsks)
       setPending(pend)
       setSupervisors(sups)
+      setNotifications(notifs)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [sup.id])
+
+  async function handleMarkRead(id) {
+    await markNotificationRead(id)
+    setNotifications(n => n.map(x => x.id === id ? { ...x, read: true } : x))
+  }
+  async function handleMarkAllRead() {
+    await markAllNotificationsRead('supervisor', sup.id)
+    setNotifications(n => n.map(x => ({ ...x, read: true })))
+  }
+
+  const checkOverdue = useCallback(async (emps, tsks, sups) => {
+    if (!isAdmin) return
+    try {
+      const [notifSettings, allProgressRes] = await Promise.all([
+        fetchTaskNotificationSettings(),
+        supabase.from('employee_tasks').select('employee_id,task_id,done,approved'),
+      ])
+      const allProgress = allProgressRes.data || []
+      const settingsMap = Object.fromEntries(notifSettings.map(s => [s.task_id, s]))
+      const progressSet = new Set(allProgress.filter(p => p.done || p.approved).map(p => `${p.employee_id}-${p.task_id}`))
+      const todayStr = new Date().toISOString().split('T')[0]
+      const { data: todayNotifs } = await supabase.from('notifications')
+        .select('employee_id,task_id').eq('type', 'task_overdue').gte('created_at', todayStr)
+      const notifiedToday = new Set((todayNotifs || []).map(n => `${n.employee_id}-${n.task_id}`))
+      const newNotifs = []
+      const emailPromises = []
+      for (const emp of emps) {
+        const dayNum = getDayNumber(emp.start_date)
+        for (const task of tsks) {
+          if (progressSet.has(`${emp.id}-${task.id}`)) continue
+          const daysOverdue = dayNum - task.due_day
+          if (daysOverdue <= 0) continue
+          const s = settingsMap[task.id]
+          if (!s || !s.enabled) continue
+          if (!s.notify_at_days.includes(daysOverdue)) continue
+          if (notifiedToday.has(`${emp.id}-${task.id}`)) continue
+          const title = `Overdue: ${task.name}`
+          const msg = `${emp.name} is ${daysOverdue} day(s) past due on "${task.name}"`
+          sups.forEach(s2 => {
+            newNotifs.push({ recipient_type: 'supervisor', recipient_id: s2.id, type: 'task_overdue', title, message: msg, employee_id: emp.id, task_id: task.id })
+            if (s2.email) emailPromises.push(sendEmailNotification({ to: s2.email, subject: `Overdue Task — ${emp.name}`, html: `<p>${msg}</p><p>Please log in to the <strong>Ritsema Training Tracker</strong> to review.</p>` }))
+          })
+        }
+      }
+      if (newNotifs.length) {
+        await createNotifications(newNotifs)
+        await Promise.all(emailPromises)
+        const mine = newNotifs.filter(n => n.recipient_id === sup.id)
+        if (mine.length) setNotifications(prev => [...mine.map(n => ({ ...n, id: crypto.randomUUID(), read: false, created_at: new Date().toISOString() })), ...prev])
+      }
+    } catch (err) { console.error('Overdue check failed:', err) }
+  }, [isAdmin, sup.id])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (!loading && employees.length && tasks.length && supervisors.length) {
+      checkOverdue(employees, tasks, supervisors)
+    }
+  }, [loading]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const pendingCount = pending.length
   const tabs = ['employees', 'pending', 'schedule', ...(isAdmin ? ['admin'] : [])]
@@ -58,7 +123,10 @@ export default function SupervisorDashboard() {
             </div>
           </div>
         </div>
-        <Btn size="sm" onClick={signOut}>Sign out</Btn>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <NotificationBell notifications={notifications} onMarkRead={handleMarkRead} onMarkAllRead={handleMarkAllRead} />
+          <Btn size="sm" onClick={signOut}>Sign out</Btn>
+        </div>
       </div>
 
       <TabBar tabs={tabs} labels={labels} active={tab} onChange={setTab} />
@@ -94,6 +162,15 @@ function EmployeesTab({ employees, tasks, sup, onRefresh }) {
     await approveTask(empId, taskId, sup.id, competency)
     const p = await fetchEmployeeTaskProgress(empId)
     setProgressMap(m => ({ ...m, [empId]: p }))
+    // Notify employee
+    const emp2 = employees.find(e => e.id === empId)
+    const task2 = tasks.find(t => t.id === taskId)
+    if (emp2 && task2) {
+      const title = `Task approved: ${task2.name}`
+      const msg = `${sup.name} approved your task "${task2.name}"`
+      createNotification({ recipientType: 'employee', recipientId: empId, type: 'task_approved', title, message: msg, employeeId: empId, taskId }).catch(console.error)
+      if (emp2.email) sendEmailNotification({ to: emp2.email, subject: `Task Approved — ${task2.name}`, html: `<p>Hi ${emp2.name.split(' ')[0]},</p><p>${msg}.</p><p>Log in to <strong>Ritsema Training Tracker</strong> to view your progress.</p>` })
+    }
     onRefresh()
   }
 
@@ -101,6 +178,15 @@ function EmployeesTab({ employees, tasks, sup, onRefresh }) {
     await saveSupNote(empId, taskId, sup.id, note)
     const p = await fetchEmployeeTaskProgress(empId)
     setProgressMap(m => ({ ...m, [empId]: p }))
+    // Notify employee
+    const emp2 = employees.find(e => e.id === empId)
+    const task2 = tasks.find(t => t.id === taskId)
+    if (emp2 && task2) {
+      const title = `Note added: ${task2.name}`
+      const msg = `${sup.name} left a note on "${task2.name}": "${note}"`
+      createNotification({ recipientType: 'employee', recipientId: empId, type: 'note_added', title, message: msg, employeeId: empId, taskId }).catch(console.error)
+      if (emp2.email) sendEmailNotification({ to: emp2.email, subject: `Supervisor Note — ${task2.name}`, html: `<p>Hi ${emp2.name.split(' ')[0]},</p><p>${sup.name} left a note on your task <strong>${task2.name}</strong>:</p><blockquote>${note}</blockquote><p>Log in to <strong>Ritsema Training Tracker</strong> to view it.</p>` })
+    }
   }
 
   async function handleClearNote(empId, taskId) {
@@ -227,6 +313,15 @@ function PendingTab({ pending, sup, onRefresh }) {
     setSaving(s => ({ ...s, [item.id]: true }))
     try {
       await approveTask(item.employee_id, item.task_id, sup.id, comp)
+      // Notify employee
+      const emp2 = item.employee
+      const task2 = item.task
+      if (emp2 && task2) {
+        const title = `Task approved: ${task2.name}`
+        const msg = `${sup.name} approved your task "${task2.name}"`
+        createNotification({ recipientType: 'employee', recipientId: emp2.id, type: 'task_approved', title, message: msg, employeeId: emp2.id, taskId: task2.id }).catch(console.error)
+        if (emp2.email) sendEmailNotification({ to: emp2.email, subject: `Task Approved — ${task2.name}`, html: `<p>Hi ${emp2.name.split(' ')[0]},</p><p>${msg}.</p><p>Log in to <strong>Ritsema Training Tracker</strong> to view your progress.</p>` })
+      }
       onRefresh()
     } finally {
       setSaving(s => ({ ...s, [item.id]: false }))
@@ -330,6 +425,7 @@ function AdminEmployees({ employees, sup, onRefresh }) {
   const [num, setNum] = useState('')
   const [type, setType] = useState('New Hire')
   const [start, setStart] = useState('')
+  const [email, setEmail] = useState('')
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [saving, setSaving] = useState(false)
@@ -341,9 +437,9 @@ function AdminEmployees({ employees, sup, onRefresh }) {
     if (!name.trim() || !num.trim()) { setErr('Name and employee number are required.'); return }
     setSaving(true)
     try {
-      await createEmployee({ name: name.trim(), empNumber: num.trim(), hireType: type, startDate: start || undefined, createdBy: sup.id })
+      await createEmployee({ name: name.trim(), empNumber: num.trim(), hireType: type, startDate: start || undefined, createdBy: sup.id, email: email.trim() || undefined })
       setOk(`${name.trim()} (#${num.trim()}) added.`)
-      setName(''); setNum(''); setStart('')
+      setName(''); setNum(''); setStart(''); setEmail('')
       onRefresh()
     } catch (e) {
       setErr(e.message)
@@ -361,6 +457,7 @@ function AdminEmployees({ employees, sup, onRefresh }) {
             <div><FieldLabel>Full name</FieldLabel><input style={input} placeholder="First Last" value={name} onChange={e => setName(e.target.value)} /></div>
             <div><FieldLabel>Employee number</FieldLabel><input style={input} placeholder="EMP-1099" value={num} onChange={e => setNum(e.target.value)} /></div>
           </div>
+          <div><FieldLabel>Email (optional)</FieldLabel><input style={input} type="email" placeholder="employee@email.com" value={email} onChange={e => setEmail(e.target.value)} /></div>
           <div style={formRow}>
             <div><FieldLabel>Hire type</FieldLabel>
               <select style={input} value={type} onChange={e => setType(e.target.value)}>
@@ -400,13 +497,14 @@ function EditEmployeeForm({ emp, onDone }) {
   const [num, setNum] = useState(emp.emp_number)
   const [type, setType] = useState(emp.hire_type)
   const [start, setStart] = useState(emp.start_date)
+  const [email, setEmail] = useState(emp.email || '')
   const [msg, setMsg] = useState('')
   const [saving, setSaving] = useState(false)
 
   async function save() {
     setSaving(true)
     try {
-      await updateEmployee(emp.id, { name, empNumber: num, hireType: type, startDate: start })
+      await updateEmployee(emp.id, { name, empNumber: num, hireType: type, startDate: start, email: email.trim() || undefined })
       setMsg('Saved.')
       setTimeout(onDone, 700)
     } catch (e) { setMsg(e.message) } finally { setSaving(false) }
@@ -418,6 +516,7 @@ function EditEmployeeForm({ emp, onDone }) {
         <div><FieldLabel>Name</FieldLabel><input style={input} value={name} onChange={e => setName(e.target.value)} /></div>
         <div><FieldLabel>Emp number</FieldLabel><input style={input} value={num} onChange={e => setNum(e.target.value)} /></div>
       </div>
+      <div><FieldLabel>Email (optional)</FieldLabel><input style={input} type="email" placeholder="employee@email.com" value={email} onChange={e => setEmail(e.target.value)} /></div>
       <div style={formRow}>
         <div><FieldLabel>Hire type</FieldLabel><select style={input} value={type} onChange={e => setType(e.target.value)}><option>New Hire</option><option>Apprentice</option><option>Installer</option><option>Asst. Foreman</option><option>Foreman</option></select></div>
         <div><FieldLabel>Start date</FieldLabel><input style={input} type="date" value={start} onChange={e => setStart(e.target.value)} /></div>
@@ -434,6 +533,7 @@ function EditEmployeeForm({ emp, onDone }) {
 // ─── Admin: Tasks ──────────────────────────────────────────────────────────
 
 function AdminTasks({ tasks, onRefresh }) {
+  const [tasksTab, setTasksTab] = useState('modules')
   const [modules, setModules] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -451,10 +551,16 @@ function AdminTasks({ tasks, onRefresh }) {
 
   return (
     <div>
-      {modules.map(mod => (
-        <TaskModulePanel key={mod.number} mod={mod} tasks={tasks.filter(t => t.module === mod.number)} onRefresh={handleRefresh} />
-      ))}
-      <AddModuleForm modules={modules} onDone={handleRefresh} />
+      <TabBar tabs={['modules', 'notifications']} labels={['Modules', 'Notification Settings']} active={tasksTab} onChange={setTasksTab} />
+      {tasksTab === 'modules' && (
+        <div>
+          {modules.map(mod => (
+            <TaskModulePanel key={mod.number} mod={mod} tasks={tasks.filter(t => t.module === mod.number)} onRefresh={handleRefresh} />
+          ))}
+          <AddModuleForm modules={modules} onDone={handleRefresh} />
+        </div>
+      )}
+      {tasksTab === 'notifications' && <NotificationSettingsTab tasks={tasks} />}
     </div>
   )
 }
@@ -627,6 +733,7 @@ function AdminSupervisors({ supervisors, currentSup, onRefresh }) {
   const [name, setName] = useState('')
   const [num, setNum] = useState('')
   const [role, setRole] = useState('Foreman')
+  const [email, setEmail] = useState('')
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [saving, setSaving] = useState(false)
@@ -637,9 +744,9 @@ function AdminSupervisors({ supervisors, currentSup, onRefresh }) {
     if (!name.trim() || !num.trim()) { setErr('Name and number required.'); return }
     setSaving(true)
     try {
-      await createSupervisor({ name: name.trim(), empNumber: num.trim(), role })
+      await createSupervisor({ name: name.trim(), empNumber: num.trim(), role, email: email.trim() || undefined })
       setOk(`${name.trim()} added.`)
-      setName(''); setNum('')
+      setName(''); setNum(''); setEmail('')
       onRefresh()
     } catch (e) { setErr(e.message) } finally { setSaving(false) }
   }
@@ -677,6 +784,7 @@ function AdminSupervisors({ supervisors, currentSup, onRefresh }) {
             <div><FieldLabel>Full name</FieldLabel><input style={input} placeholder="First Last" value={name} onChange={e => setName(e.target.value)} /></div>
             <div><FieldLabel>Employee number</FieldLabel><input style={input} placeholder="SUP-0099" value={num} onChange={e => setNum(e.target.value)} /></div>
           </div>
+          <div><FieldLabel>Email (optional)</FieldLabel><input style={input} type="email" placeholder="supervisor@email.com" value={email} onChange={e => setEmail(e.target.value)} /></div>
           <FieldLabel>Role</FieldLabel>
           <select style={input} value={role} onChange={e => setRole(e.target.value)}>
             <option value="Safety Director">Safety Director (Admin)</option>
@@ -697,13 +805,14 @@ function EditSupForm({ sup, onDone }) {
   const [name, setName] = useState(sup.name)
   const [num, setNum] = useState(sup.emp_number)
   const [role, setRole] = useState(sup.role)
+  const [email, setEmail] = useState(sup.email || '')
   const [msg, setMsg] = useState('')
   const [saving, setSaving] = useState(false)
 
   async function save() {
     setSaving(true)
     try {
-      await updateSupervisor(sup.id, { name, empNumber: num, role })
+      await updateSupervisor(sup.id, { name, empNumber: num, role, email: email.trim() || undefined })
       setMsg('Saved.')
       setTimeout(onDone, 700)
     } catch (e) { setMsg(e.message) } finally { setSaving(false) }
@@ -715,6 +824,7 @@ function EditSupForm({ sup, onDone }) {
         <div><FieldLabel>Name</FieldLabel><input style={input} value={name} onChange={e => setName(e.target.value)} /></div>
         <div><FieldLabel>Emp number</FieldLabel><input style={input} value={num} onChange={e => setNum(e.target.value)} /></div>
       </div>
+      <div><FieldLabel>Email (optional)</FieldLabel><input style={input} type="email" placeholder="supervisor@email.com" value={email} onChange={e => setEmail(e.target.value)} /></div>
       <FieldLabel>Role</FieldLabel>
       <select style={input} value={role} onChange={e => setRole(e.target.value)}>
         <option value="Safety Director">Safety Director (Admin)</option>
@@ -727,6 +837,74 @@ function EditSupForm({ sup, onDone }) {
         <Btn size="sm" variant="primary" onClick={save} disabled={saving}>Save</Btn>
         <Btn size="sm" onClick={onDone}>Cancel</Btn>
       </div>
+    </div>
+  )
+}
+
+// ─── Notification Settings Tab ────────────────────────────────────────────
+
+function NotificationSettingsTab({ tasks }) {
+  const [settings, setSettings] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState({})
+  const [saved, setSaved] = useState({})
+
+  useEffect(() => {
+    fetchTaskNotificationSettings().then(data => {
+      const map = {}
+      data.forEach(s => { map[s.task_id] = { enabled: s.enabled, days: s.notify_at_days.join(', ') } })
+      setSettings(map)
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }, [])
+
+  async function saveSetting(taskId) {
+    setSaving(s => ({ ...s, [taskId]: true }))
+    const s = settings[taskId] || { enabled: true, days: '1, 3, 7' }
+    const days = (s.days || '').split(',').map(d => parseInt(d.trim())).filter(d => !isNaN(d) && d > 0)
+    await upsertTaskNotificationSetting(taskId, days.length ? days : [1, 3, 7], s.enabled !== false)
+    setSaving(s2 => ({ ...s2, [taskId]: false }))
+    setSaved(s2 => ({ ...s2, [taskId]: true }))
+    setTimeout(() => setSaved(s2 => ({ ...s2, [taskId]: false })), 1500)
+  }
+
+  if (loading) return <Spinner />
+
+  const modules = [...new Set(tasks.map(t => t.module))].sort((a, b) => a - b)
+
+  return (
+    <div>
+      <p style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
+        Set how many days past the due date overdue notifications are sent. Enter day numbers separated by commas (e.g. <strong>1, 3, 7</strong>). Uncheck to disable notifications for a task.
+      </p>
+      {modules.map(mod => (
+        <AdminPanel key={mod} title={`Module ${mod}`} defaultOpen>
+          {tasks.filter(t => t.module === mod).map(task => {
+            const s = settings[task.id] || { enabled: true, days: '1, 3, 7' }
+            return (
+              <div key={task.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '0.5px solid rgba(0,0,0,0.08)', flexWrap: 'wrap' }}>
+                <input type="checkbox" checked={s.enabled !== false} onChange={e => setSettings(p => ({ ...p, [task.id]: { ...s, enabled: e.target.checked } }))} style={{ flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{task.name}</div>
+                  <div style={{ fontSize: 12, color: '#666' }}>Due: {task.due_label}</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: '#555' }}>Notify at days:</span>
+                  <input
+                    style={{ ...input, width: 110, marginBottom: 0 }}
+                    value={s.days}
+                    placeholder="1, 3, 7"
+                    onChange={e => setSettings(p => ({ ...p, [task.id]: { ...s, days: e.target.value } }))}
+                  />
+                  <Btn size="xs" variant={saved[task.id] ? 'teal' : 'default'} onClick={() => saveSetting(task.id)} disabled={saving[task.id]}>
+                    {saved[task.id] ? '✓ Saved' : 'Save'}
+                  </Btn>
+                </div>
+              </div>
+            )
+          })}
+        </AdminPanel>
+      ))}
     </div>
   )
 }

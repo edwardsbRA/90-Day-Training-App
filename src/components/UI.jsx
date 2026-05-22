@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { AVATAR_BG, AVATAR_TX, getAvatarIndex, getInitials } from '../data/constants'
 
 export function Avatar({ name, size = 38 }) {
@@ -149,6 +150,55 @@ export function RALogoSmall({ size = 36 }) {
         alt="Ritsema Associates"
         style={{ height: size * 0.7, width: 'auto', display: 'block' }}
       />
+    </div>
+  )
+}
+
+export function NotificationBell({ notifications = [], onMarkRead, onMarkAllRead }) {
+  const [open, setOpen] = useState(false)
+  const unread = notifications.filter(n => !n.read).length
+  return (
+    <div style={{ position: 'relative' }}>
+      <button onClick={() => setOpen(o => !o)} style={{
+        position: 'relative', background: 'none', border: '0.5px solid rgba(0,0,0,0.2)',
+        borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 15, lineHeight: 1,
+      }}>
+        🔔
+        {unread > 0 && (
+          <span style={{
+            position: 'absolute', top: -6, right: -6, background: '#7A1020', color: '#fff',
+            fontSize: 10, fontWeight: 700, borderRadius: '50%', width: 17, height: 17,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>{unread > 9 ? '9+' : unread}</span>
+        )}
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', right: 0, top: 'calc(100% + 8px)', zIndex: 200,
+          background: '#fff', border: '0.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
+          boxShadow: '0 4px 24px rgba(0,0,0,0.12)', width: 320, maxHeight: 420, overflowY: 'auto',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '0.5px solid rgba(0,0,0,0.08)', position: 'sticky', top: 0, background: '#fff' }}>
+            <span style={{ fontWeight: 500, fontSize: 14 }}>Notifications</span>
+            {unread > 0 && (
+              <button onClick={() => { onMarkAllRead(); setOpen(false) }} style={{ fontSize: 11, color: '#7A1020', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+                Mark all read
+              </button>
+            )}
+          </div>
+          {notifications.length === 0 && <p style={{ fontSize: 13, color: '#888', padding: 16, textAlign: 'center' }}>No notifications yet</p>}
+          {notifications.map(n => (
+            <div key={n.id} onClick={() => !n.read && onMarkRead(n.id)} style={{
+              padding: '10px 16px', borderBottom: '0.5px solid rgba(0,0,0,0.06)',
+              background: n.read ? '#fff' : '#FEF8F8', cursor: n.read ? 'default' : 'pointer',
+            }}>
+              <div style={{ fontSize: 13, fontWeight: n.read ? 400 : 600 }}>{n.title}</div>
+              <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>{n.message}</div>
+              <div style={{ fontSize: 11, color: '#aaa', marginTop: 3 }}>{new Date(n.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

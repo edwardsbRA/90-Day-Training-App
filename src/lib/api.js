@@ -22,20 +22,20 @@ export async function fetchSupervisorByCredentials(name, empNumber) {
   return data
 }
 
-export async function createSupervisor({ name, empNumber, role }) {
+export async function createSupervisor({ name, empNumber, role, email }) {
   const { data, error } = await supabase
     .from('supervisors')
-    .insert({ name, emp_number: empNumber, role })
+    .insert({ name, emp_number: empNumber, role, email: email || null })
     .select()
     .single()
   if (error) throw error
   return data
 }
 
-export async function updateSupervisor(id, { name, empNumber, role }) {
+export async function updateSupervisor(id, { name, empNumber, role, email }) {
   const { data, error } = await supabase
     .from('supervisors')
-    .update({ name, emp_number: empNumber, role })
+    .update({ name, emp_number: empNumber, role, email: email || null })
     .eq('id', id)
     .select()
     .single()
@@ -70,7 +70,7 @@ export async function fetchEmployeeByCredentials(name, empNumber) {
   return data
 }
 
-export async function createEmployee({ name, empNumber, hireType, startDate, createdBy }) {
+export async function createEmployee({ name, empNumber, hireType, startDate, createdBy, email }) {
   const { data, error } = await supabase
     .from('employees')
     .insert({
@@ -79,6 +79,7 @@ export async function createEmployee({ name, empNumber, hireType, startDate, cre
       hire_type: hireType,
       start_date: startDate || new Date().toISOString().split('T')[0],
       created_by: createdBy || null,
+      email: email || null,
     })
     .select()
     .single()
@@ -86,10 +87,10 @@ export async function createEmployee({ name, empNumber, hireType, startDate, cre
   return data
 }
 
-export async function updateEmployee(id, { name, empNumber, hireType, startDate }) {
+export async function updateEmployee(id, { name, empNumber, hireType, startDate, email }) {
   const { data, error } = await supabase
     .from('employees')
-    .update({ name, emp_number: empNumber, hire_type: hireType, start_date: startDate })
+    .update({ name, emp_number: empNumber, hire_type: hireType, start_date: startDate, email: email || null })
     .eq('id', id)
     .select()
     .single()
@@ -269,4 +270,71 @@ export async function fetchPendingApprovals() {
     .order('done_at')
   if (error) throw error
   return data || []
+}
+
+// ─── Notifications ──────────────────────────────────────────────────────────
+
+export async function fetchNotifications(recipientType, recipientId) {
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('*')
+    .eq('recipient_type', recipientType)
+    .eq('recipient_id', recipientId)
+    .order('created_at', { ascending: false })
+    .limit(50)
+  if (error) throw error
+  return data || []
+}
+
+export async function createNotification({ recipientType, recipientId, type, title, message, employeeId, taskId }) {
+  const { error } = await supabase.from('notifications').insert({
+    recipient_type: recipientType,
+    recipient_id: recipientId,
+    type, title, message,
+    employee_id: employeeId || null,
+    task_id: taskId || null,
+  })
+  if (error) throw error
+}
+
+export async function createNotifications(rows) {
+  if (!rows.length) return
+  const { error } = await supabase.from('notifications').insert(rows)
+  if (error) throw error
+}
+
+export async function markNotificationRead(id) {
+  const { error } = await supabase.from('notifications').update({ read: true }).eq('id', id)
+  if (error) throw error
+}
+
+export async function markAllNotificationsRead(recipientType, recipientId) {
+  const { error } = await supabase.from('notifications').update({ read: true })
+    .eq('recipient_type', recipientType).eq('recipient_id', recipientId).eq('read', false)
+  if (error) throw error
+}
+
+export async function fetchTaskNotificationSettings() {
+  const { data, error } = await supabase.from('task_notification_settings').select('*')
+  if (error) throw error
+  return data || []
+}
+
+export async function upsertTaskNotificationSetting(taskId, notifyAtDays, enabled) {
+  const { error } = await supabase.from('task_notification_settings')
+    .upsert({ task_id: taskId, notify_at_days: notifyAtDays, enabled }, { onConflict: 'task_id' })
+  if (error) throw error
+}
+
+export async function sendEmailNotification({ to, subject, html }) {
+  if (!to) return
+  try {
+    await fetch('/api/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, subject, html }),
+    })
+  } catch (err) {
+    console.error('Email send failed:', err)
+  }
 }

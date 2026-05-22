@@ -3,13 +3,15 @@ import { useAuth } from '../lib/AuthContext'
 import {
   fetchTasks, fetchEmployeeTaskProgress,
   upsertTaskDone, upsertSelfCompetency,
+  fetchSupervisors, fetchNotifications, createNotifications,
+  markNotificationRead, markAllNotificationsRead, sendEmailNotification,
 } from '../lib/api'
 import {
   getDayNumber, getDaysLeft, formatDate,
   CHECKINS, COMPETENCY_OPTIONS,
 } from '../data/constants'
 import {
-  Badge, ProgressBar, Card, Btn, AlertBanner, Spinner, RALogoSmall,
+  Badge, ProgressBar, Card, Btn, AlertBanner, Spinner, RALogoSmall, NotificationBell,
 } from './UI'
 
 export default function EmployeeDashboard() {
@@ -20,15 +22,17 @@ export default function EmployeeDashboard() {
   const [progress, setProgress] = useState({})
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('overview')
+  const [notifications, setNotifications] = useState([])
 
   const day = getDayNumber(emp.start_date)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [t, p] = await Promise.all([fetchTasks(), fetchEmployeeTaskProgress(emp.id)])
+      const [t, p, notifs] = await Promise.all([fetchTasks(), fetchEmployeeTaskProgress(emp.id), fetchNotifications('employee', emp.id)])
       setTasks(t)
       setProgress(p)
+      setNotifications(notifs)
     } finally {
       setLoading(false)
     }
@@ -36,12 +40,31 @@ export default function EmployeeDashboard() {
 
   useEffect(() => { load() }, [load])
 
+  async function handleMarkRead(id) {
+    await markNotificationRead(id)
+    setNotifications(n => n.map(x => x.id === id ? { ...x, read: true } : x))
+  }
+  async function handleMarkAllRead() {
+    await markAllNotificationsRead('employee', emp.id)
+    setNotifications(n => n.map(x => ({ ...x, read: true })))
+  }
+
   async function toggleDone(taskId) {
     const current = progress[taskId]
     if (current?.approved) return
     const newDone = !(current?.done)
     setProgress(p => ({ ...p, [taskId]: { ...p[taskId], done: newDone } }))
     await upsertTaskDone(emp.id, taskId, newDone)
+    if (newDone) {
+      try {
+        const sups = await fetchSupervisors()
+        const task = tasks.find(t => t.id === taskId)
+        const title = `Task completed: ${task?.name}`
+        const msg = `${emp.name} marked "${task?.name}" as complete — pending approval`
+        await createNotifications(sups.map(s => ({ recipient_type: 'supervisor', recipient_id: s.id, type: 'task_done', title, message: msg, employee_id: emp.id, task_id: taskId })))
+        sups.forEach(s => { if (s.email) sendEmailNotification({ to: s.email, subject: `Task Complete — ${emp.name}`, html: `<p>${msg}</p><p>Log in to <strong>Ritsema Training Tracker</strong> to approve.</p>` }) })
+      } catch (err) { console.error('Notification failed:', err) }
+    }
   }
 
   async function setCompetency(taskId, val) {
@@ -77,7 +100,10 @@ export default function EmployeeDashboard() {
             <p style={{ fontSize: 13, color: '#666', marginTop: 2 }}>#{emp.emp_number} · {emp.hire_type} · Day {day} of 90</p>
           </div>
         </div>
-        <Btn size="sm" onClick={signOut}>Sign out</Btn>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <NotificationBell notifications={notifications} onMarkRead={handleMarkRead} onMarkAllRead={handleMarkAllRead} />
+          <Btn size="sm" onClick={signOut}>Sign out</Btn>
+        </div>
       </div>
 
       {/* Alerts */}
