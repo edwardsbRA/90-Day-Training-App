@@ -61,7 +61,7 @@ export default function LoginPage() {
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
           <RALogo size={110} />
           <h1 style={{ fontSize: 20, fontWeight: 500, marginTop: 14, lineHeight: 1.3 }}>
-            90-Day Training Checklist
+            Ritsema Training Tracker
           </h1>
           <p style={{ fontSize: 13, color: '#666', marginTop: 6 }}>
             New hire onboarding progress &amp; approvals
