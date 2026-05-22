@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "PowerShell(Get-ChildItem \"C:\\\\Program Files\\\\nodejs\" -ErrorAction SilentlyContinue; Get-ChildItem \"$env:LOCALAPPDATA\\\\Programs\\\\nodejs\" -ErrorAction SilentlyContinue; Get-ChildItem \"$env:ProgramFiles\\(x86\\)\\\\nodejs\" -ErrorAction SilentlyContinue; $env:PATH)"
+    ]
+  }
+}
