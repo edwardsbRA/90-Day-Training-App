@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/AuthContext'
-import { fetchEmployeeByCredentials, fetchSupervisorByCredentials, createSupervisor } from '../lib/api'
+import { fetchEmployeeByCredentials, fetchSupervisorByCredentials } from '../lib/api'
 import { Btn, Card, ErrorMsg, RALogo } from './UI'
 
 export default function LoginPage() {
@@ -14,7 +14,6 @@ export default function LoginPage() {
 
   const [sName, setSName] = useState('')
   const [sNum, setSNum] = useState('')
-  const [sRole, setSRole] = useState('Safety Director')
 
   async function handleEmpLogin(e) {
     e.preventDefault()
@@ -38,11 +37,8 @@ export default function LoginPage() {
     if (!sName.trim() || !sNum.trim()) { setError('Please enter your name and employee number.'); return }
     setLoading(true)
     try {
-      let sup = await fetchSupervisorByCredentials(sName, sNum)
-      if (!sup) {
-        // Auto-create supervisor on first login
-        sup = await createSupervisor({ name: sName.trim(), empNumber: sNum.trim(), role: sRole })
-      }
+      const sup = await fetchSupervisorByCredentials(sName, sNum)
+      if (!sup) { setError('No account found. Contact your Safety Director or HR Manager to be added.'); return }
       signInSupervisor(sup)
     } catch (err) {
       setError(err.message)
@@ -98,13 +94,6 @@ export default function LoginPage() {
               <input style={inputStyle} placeholder="First Last" value={sName} onChange={e => setSName(e.target.value)} />
               <label style={labelStyle}>Employee number</label>
               <input style={inputStyle} placeholder="SUP-0021" value={sNum} onChange={e => setSNum(e.target.value)} />
-              <label style={labelStyle}>Role</label>
-              <select style={inputStyle} value={sRole} onChange={e => setSRole(e.target.value)}>
-                <option value="Safety Director">Safety Director (Admin)</option>
-                <option value="HR/Training Manager">HR/Training Manager (Admin)</option>
-                <option value="Foreman">Foreman</option>
-                <option value="Superintendent">Superintendent</option>
-              </select>
               {error && <ErrorMsg>{error}</ErrorMsg>}
               <Btn type="submit" variant="primary" style={{ width: '100%', justifyContent: 'center', marginTop: 8 }} disabled={loading}>
                 {loading ? 'Signing in…' : 'Sign in as supervisor'}
