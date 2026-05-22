@@ -363,7 +363,7 @@ function AdminEmployees({ employees, sup, onRefresh }) {
           <div style={formRow}>
             <div><FieldLabel>Hire type</FieldLabel>
               <select style={input} value={type} onChange={e => setType(e.target.value)}>
-                <option>New Hire</option><option>Apprentice</option>
+                <option>New Hire</option><option>Apprentice</option><option>Installer</option><option>Asst. Foreman</option><option>Foreman</option>
               </select>
             </div>
             <div><FieldLabel>Start date (optional)</FieldLabel><input style={input} type="date" value={start} onChange={e => setStart(e.target.value)} /></div>
@@ -418,7 +418,7 @@ function EditEmployeeForm({ emp, onDone }) {
         <div><FieldLabel>Emp number</FieldLabel><input style={input} value={num} onChange={e => setNum(e.target.value)} /></div>
       </div>
       <div style={formRow}>
-        <div><FieldLabel>Hire type</FieldLabel><select style={input} value={type} onChange={e => setType(e.target.value)}><option>New Hire</option><option>Apprentice</option></select></div>
+        <div><FieldLabel>Hire type</FieldLabel><select style={input} value={type} onChange={e => setType(e.target.value)}><option>New Hire</option><option>Apprentice</option><option>Installer</option><option>Asst. Foreman</option><option>Foreman</option></select></div>
         <div><FieldLabel>Start date</FieldLabel><input style={input} type="date" value={start} onChange={e => setStart(e.target.value)} /></div>
       </div>
       {msg && <p style={{ fontSize: 12, color: '#0F6E56', marginTop: 4 }}>{msg}</p>}
