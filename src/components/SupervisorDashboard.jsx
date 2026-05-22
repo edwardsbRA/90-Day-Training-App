@@ -6,6 +6,7 @@ import {
   createEmployee, updateEmployee,
   createTask, updateTask, deleteTask as deleteTaskApi,
   fetchSupervisors, createSupervisor, updateSupervisor, deleteSupervisor,
+  fetchModules, createModule, deleteModule,
 } from '../lib/api'
 import { getDayNumber, getDaysLeft, formatDate, CHECKINS, COMPETENCY_OPTIONS, ADMIN_ROLES } from '../data/constants'
 import { Avatar, Badge, ProgressBar, Card, Btn, AdminBadge, Spinner, RALogoSmall, ErrorMsg, SuccessMsg } from './UI'
@@ -433,17 +434,41 @@ function EditEmployeeForm({ emp, onDone }) {
 // ─── Admin: Tasks ──────────────────────────────────────────────────────────
 
 function AdminTasks({ tasks, onRefresh }) {
-  const m1 = tasks.filter(t => t.module === 1)
-  const m2 = tasks.filter(t => t.module === 2)
+  const [modules, setModules] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  async function loadModules() {
+    setLoading(true)
+    try { setModules(await fetchModules()) }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => { loadModules() }, [])
+
+  function handleRefresh() { onRefresh(); loadModules() }
+
+  if (loading) return <Spinner />
+
   return (
     <div>
-      <TaskModulePanel module={1} tasks={m1} onRefresh={onRefresh} />
-      <TaskModulePanel module={2} tasks={m2} onRefresh={onRefresh} />
+      {modules.map(mod => (
+        <TaskModulePanel key={mod.number} mod={mod} tasks={tasks.filter(t => t.module === mod.number)} onRefresh={handleRefresh} />
+      ))}
+      <AddModuleForm modules={modules} onDone={handleRefresh} />
     </div>
   )
 }
 
-function TaskModulePanel({ module, tasks, onRefresh }) {
+const MODULE_COLORS = [
+  { bg: '#FAECE7', color: '#993C1D', badge: 'coral' },
+  { bg: '#E6F1FB', color: '#185FA5', badge: 'blue' },
+  { bg: '#E1F5EE', color: '#0F6E56', badge: 'teal' },
+  { bg: '#EEEDFE', color: '#3C3489', badge: 'purple' },
+  { bg: '#FAEEDA', color: '#854F0B', badge: 'amber' },
+  { bg: '#EAF3DE', color: '#3B6D11', badge: 'green' },
+]
+
+function TaskModulePanel({ mod, tasks, onRefresh }) {
   const [editId, setEditId] = useState(null)
   const [name, setName] = useState('')
   const [by, setBy] = useState('')
@@ -453,7 +478,7 @@ function TaskModulePanel({ module, tasks, onRefresh }) {
   const [err, setErr] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const colors = { 1: { bg: '#FAECE7', color: '#993C1D' }, 2: { bg: '#E6F1FB', color: '#185FA5' } }
+  const c = MODULE_COLORS[(mod.number - 1) % MODULE_COLORS.length]
 
   async function handleAdd(e) {
     e.preventDefault()
@@ -461,23 +486,34 @@ function TaskModulePanel({ module, tasks, onRefresh }) {
     if (!name.trim() || !by.trim()) { setErr('Name and "Conducted by" are required.'); return }
     setSaving(true)
     try {
-      await createTask({ module, name: name.trim(), conductedBy: by.trim(), dueDay: parseInt(day) || 90, dueLabel: lbl.trim() || `Day ${day}`, involves: inv.trim() || 'See supervisor for details.' })
+      await createTask({ module: mod.number, name: name.trim(), conductedBy: by.trim(), dueDay: parseInt(day) || 90, dueLabel: lbl.trim() || `Day ${day}`, involves: inv.trim() || 'See supervisor for details.' })
       setName(''); setBy(''); setDay(''); setLbl(''); setInv('')
       onRefresh()
     } catch (e) { setErr(e.message) } finally { setSaving(false) }
   }
 
-  async function handleDelete(id) {
+  async function handleDeleteTask(id) {
     if (!window.confirm('Remove this task?')) return
     await deleteTaskApi(id)
     onRefresh()
   }
 
+  async function handleDeleteModule() {
+    if (!window.confirm(`Delete "${mod.name}" and all ${tasks.length} task(s) inside it? This cannot be undone.`)) return
+    await deleteModule(mod.number)
+    onRefresh()
+  }
+
   return (
-    <AdminPanel title={<span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <span style={{ width: 22, height: 22, borderRadius: '50%', ...colors[module], display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 500 }}>{module}</span>
-      Module {module} tasks <Badge variant={module === 1 ? 'coral' : 'blue'}>{tasks.length}</Badge>
-    </span>}>
+    <AdminPanel title={
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ width: 22, height: 22, borderRadius: '50%', background: c.bg, color: c.color, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 500 }}>{mod.number}</span>
+        {mod.name} <Badge variant={c.badge}>{tasks.length}</Badge>
+      </span>
+    }>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: tasks.length ? 0 : 8 }}>
+        <Btn size="xs" variant="danger" onClick={handleDeleteModule}>Delete module</Btn>
+      </div>
       {tasks.map(t => (
         <div key={t.id}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 0', borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
@@ -487,14 +523,14 @@ function TaskModulePanel({ module, tasks, onRefresh }) {
             </div>
             <div style={{ display: 'flex', gap: 4 }}>
               <Btn size="xs" onClick={() => setEditId(editId === t.id ? null : t.id)}>Edit</Btn>
-              <Btn size="xs" variant="danger" onClick={() => handleDelete(t.id)}>Delete</Btn>
+              <Btn size="xs" variant="danger" onClick={() => handleDeleteTask(t.id)}>Delete</Btn>
             </div>
           </div>
           {editId === t.id && <EditTaskForm task={t} onDone={() => { setEditId(null); onRefresh() }} />}
         </div>
       ))}
       <div style={{ marginTop: 14, paddingTop: 14, borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
-        <p style={{ fontSize: 13, fontWeight: 500, color: '#555', marginBottom: 10 }}>Add new Module {module} task</p>
+        <p style={{ fontSize: 13, fontWeight: 500, color: '#555', marginBottom: 10 }}>Add new {mod.name} task</p>
         <form onSubmit={handleAdd}>
           <div style={formRow}>
             <div><FieldLabel>Task name</FieldLabel><input style={input} placeholder="e.g. Ladder Safety" value={name} onChange={e => setName(e.target.value)} /></div>
@@ -510,6 +546,37 @@ function TaskModulePanel({ module, tasks, onRefresh }) {
           <Btn type="submit" size="sm" variant="purple" disabled={saving} style={{ marginTop: 4 }}>+ Add task</Btn>
         </form>
       </div>
+    </AdminPanel>
+  )
+}
+
+function AddModuleForm({ modules, onDone }) {
+  const [name, setName] = useState('')
+  const [err, setErr] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function handleAdd(e) {
+    e.preventDefault()
+    setErr('')
+    if (!name.trim()) { setErr('Module name is required.'); return }
+    const nextNum = modules.length ? Math.max(...modules.map(m => m.number)) + 1 : 1
+    setSaving(true)
+    try {
+      await createModule(nextNum, name.trim())
+      setName('')
+      onDone()
+    } catch (e) { setErr(e.message) } finally { setSaving(false) }
+  }
+
+  return (
+    <AdminPanel title="+ Create new module">
+      <p style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>Create a new training module. Tasks can be added to it after creating it.</p>
+      <form onSubmit={handleAdd}>
+        <FieldLabel>Module name</FieldLabel>
+        <input style={input} placeholder="e.g. Module 3: Advanced Operations" value={name} onChange={e => setName(e.target.value)} />
+        {err && <ErrorMsg>{err}</ErrorMsg>}
+        <Btn type="submit" size="sm" variant="primary" disabled={saving} style={{ marginTop: 4 }}>Create module</Btn>
+      </form>
     </AdminPanel>
   )
 }

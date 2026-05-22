@@ -227,6 +227,33 @@ export async function clearSupNote(employeeId, taskId) {
   if (error) throw error
 }
 
+// ─── Modules ──────────────────────────────────────────────────────────────
+
+export async function fetchModules() {
+  const { data, error } = await supabase
+    .from('modules')
+    .select('*')
+    .order('number')
+  if (error) throw error
+  return data
+}
+
+export async function createModule(number, name) {
+  const { data, error } = await supabase
+    .from('modules')
+    .insert({ number, name })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function deleteModule(number) {
+  await supabase.from('tasks').delete().eq('module', number)
+  const { error } = await supabase.from('modules').delete().eq('number', number)
+  if (error) throw error
+}
+
 // ─── Pending approvals across all employees ───────────────────────────────
 
 export async function fetchPendingApprovals() {
